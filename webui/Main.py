@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import webbrowser
@@ -172,6 +173,75 @@ def scroll_to_bottom():
             }
         }
         scroll(1);
+    </script>
+    """
+    st.components.v1.html(js, height=0, width=0)
+
+
+def enable_system_notification_permission(button_text):
+    js = f"""
+    <script>
+        const buttonText = {json.dumps(button_text)};
+
+        function requestNotificationPermission() {{
+            if (!("Notification" in window) || Notification.permission !== "default") {{
+                return;
+            }}
+            Notification.requestPermission();
+        }}
+
+        function bindGenerateButton() {{
+            const buttons = parent.document.querySelectorAll("button");
+            buttons.forEach((button) => {{
+                if (
+                    button.innerText.trim() === buttonText &&
+                    button.dataset.mptNotificationPermission !== "bound"
+                ) {{
+                    button.dataset.mptNotificationPermission = "bound";
+                    button.addEventListener("click", requestNotificationPermission);
+                }}
+            }});
+        }}
+
+        bindGenerateButton();
+        const observer = new MutationObserver(bindGenerateButton);
+        observer.observe(parent.document.body, {{ childList: true, subtree: true }});
+    </script>
+    """
+    st.components.v1.html(js, height=0, width=0)
+
+
+def send_system_notification(title, body):
+    js = f"""
+    <script>
+        const title = {json.dumps(title)};
+        const body = {json.dumps(body)};
+
+        function notify() {{
+            if (!("Notification" in window)) {{
+                return;
+            }}
+
+            if (Notification.permission === "granted") {{
+                const notification = new Notification(title, {{ body }});
+                notification.onclick = () => {{
+                    parent.focus();
+                    window.focus();
+                    notification.close();
+                }};
+                return;
+            }}
+
+            if (Notification.permission === "default") {{
+                Notification.requestPermission().then((permission) => {{
+                    if (permission === "granted") {{
+                        new Notification(title, {{ body }});
+                    }}
+                }});
+            }}
+        }}
+
+        notify();
     </script>
     """
     st.components.v1.html(js, height=0, width=0)
@@ -1342,7 +1412,9 @@ with right_panel:
                     config.save_config()
                     st.success(tr("Pixabay API Key deleted successfully"))
 
-start_button = st.button(tr("Generate Video"), use_container_width=True, type="primary")
+generate_button_text = tr("Generate Video")
+start_button = st.button(generate_button_text, use_container_width=True, type="primary")
+enable_system_notification_permission(generate_button_text)
 if start_button:
     config.save_config()
     task_id = str(uuid4())
@@ -1436,6 +1508,10 @@ if start_button:
 
     video_files = result.get("videos", [])
     st.success(tr("Video Generation Completed"))
+    send_system_notification(
+        tr("Video Generation Completed"),
+        tr("You can download the generated video from the following links"),
+    )
     try:
         if video_files:
             player_cols = st.columns(len(video_files) * 2 + 1)
