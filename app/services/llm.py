@@ -19,6 +19,11 @@ MAX_SCRIPT_PROMPT_LENGTH = 2000
 MAX_SCRIPT_SYSTEM_PROMPT_LENGTH = 8000
 _THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*?</think>", re.IGNORECASE | re.DOTALL)
 _UNCLOSED_THINK_BLOCK_RE = re.compile(r"<think\b[^>]*>.*$", re.IGNORECASE | re.DOTALL)
+_URL_USERINFO_RE = re.compile(r"((?:https?|wss?)://)([^/\s?#@]*:[^/\s?#@]*@)", re.IGNORECASE)
+_SENSITIVE_QUERY_RE = re.compile(
+    r"([?&](?:api[_-]?key|access[_-]?token|token|key|secret|password)=)([^&#\s]+)",
+    re.IGNORECASE,
+)
 
 DEFAULT_SCRIPT_SYSTEM_PROMPT = """
 # Role: Video Script Generator
@@ -59,6 +64,21 @@ def _normalize_text_response(content, llm_provider: str) -> str:
         raise ValueError(f"[{llm_provider}] returned empty text content")
 
     return content.replace("\n", "")
+
+
+def _sanitize_error_message(error: object) -> str:
+    """
+    清理返回给 WebUI/API 的错误信息，避免自定义 base_url 中的凭据泄露。
+
+    一些 OpenAI-compatible SDK 会把请求 URL 原样拼进异常信息。如果用户为了
+    代理网关配置了 `https://user:pass@example.com/v1`，直接返回 `str(e)`
+    就会把密码暴露给页面、API 调用方或后续日志。这里仅处理错误文案，不改变
+    实际请求地址，避免影响正常调用链路。
+    """
+    message = str(error)
+    message = _URL_USERINFO_RE.sub(r"\1***:***@", message)
+    message = _SENSITIVE_QUERY_RE.sub(r"\1***", message)
+    return message
 
 
 def _extract_chat_completion_text(response, llm_provider: str) -> str:
@@ -181,6 +201,14 @@ def _generate_response(prompt: str) -> str:
                     base_url = "https://aihubmix.com/v1"
                 if not model_name:
                     model_name = "gpt-5.4-mini"
+            elif llm_provider == "aimlapi":
+                api_key = config.app.get("aimlapi_api_key")
+                model_name = config.app.get("aimlapi_model_name")
+                base_url = config.app.get("aimlapi_base_url", "")
+                if not base_url:
+                    base_url = "https://api.aimlapi.com/v1"
+                if not model_name:
+                    model_name = "openai/gpt-4o-mini"
             elif llm_provider == "oneapi":
                 api_key = config.app.get("oneapi_api_key")
                 model_name = config.app.get("oneapi_model_name")
@@ -232,6 +260,14 @@ def _generate_response(prompt: str) -> str:
                 base_url = config.app.get("minimax_base_url", "")
                 if not base_url:
                     base_url = "https://api.minimax.io/v1"
+            elif llm_provider == "evolink":
+                api_key = config.app.get("evolink_api_key")
+                model_name = config.app.get("evolink_model_name")
+                base_url = config.app.get("evolink_base_url", "")
+                if not base_url:
+                    base_url = "https://direct.evolink.ai/v1"
+                if not model_name:
+                    model_name = "gpt-5.5"
             elif llm_provider == "mimo":
                 api_key = config.app.get("mimo_api_key")
                 model_name = config.app.get("mimo_model_name")
@@ -244,6 +280,17 @@ def _generate_response(prompt: str) -> str:
                     base_url = "https://api.xiaomimimo.com/v1"
                 if not model_name:
                     model_name = "mimo-v2.5-pro"
+            elif llm_provider == "volcengine":
+                api_key = config.app.get("volcengine_api_key")
+                model_name = config.app.get("volcengine_model_name")
+                base_url = config.app.get("volcengine_base_url", "")
+                # 火山引擎方舟提供 OpenAI-compatible Chat Completions 接口。
+                # 独立 provider 可以让用户直接选择 VolcEngine，而不用把 Ark
+                # 的 key/base_url 混到通用 OpenAI 配置里，后续维护也更清晰。
+                if not base_url:
+                    base_url = "https://ark.cn-beijing.volces.com/api/v3"
+                if not model_name:
+                    model_name = "doubao-seed-2-1-turbo-260628"
             elif llm_provider == "deepseek":
                 api_key = config.app.get("deepseek_api_key")
                 model_name = config.app.get("deepseek_model_name")
@@ -549,7 +596,7 @@ def _generate_response(prompt: str) -> str:
 
         return _normalize_text_response(content, llm_provider)
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error: {_sanitize_error_message(e)}"
 
 
 def _limit_script_text(text: str | None, max_length: int, field_name: str) -> str:
@@ -694,12 +741,64 @@ def generate_script(
     return final_script.strip()
 
 
-def generate_terms(video_subject: str, video_script: str, amount: int = 5) -> List[str]:
+def _strip_code_fence(text: str) -> str:
+    """Strip a surrounding markdown code fence from an LLM response.
+
+    Non-OpenAI providers (Claude, Gemini, …) frequently wrap JSON output in a
+    ```json … ``` fence even when asked to return raw JSON. Removing it lets the
+    first json.loads() succeed instead of falling through to the regex recovery
+    path (and spuriously logging a warning). Mirrors the DOTALL handling already
+    used in _parse_social_metadata().
+    """
+    t = (text or "").strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z0-9]*\s*", "", t)
+        t = re.sub(r"\s*```$", "", t)
+    return t.strip()
+
+
+def generate_terms(
+    video_subject: str,
+    video_script: str,
+    amount: int = 5,
+    match_script_order: bool = False,
+) -> List[str]:
+    if match_script_order:
+        goal = (
+            f"Generate {amount} chronological stock-video search terms that follow "
+            "the order of topics in the video script."
+        )
+        ordering_rule = (
+            "6. keep the terms in the same order as the script narration; "
+            "earlier terms must describe earlier visual moments."
+        )
+        # 有序关键词模式下，示例数量要和 amount 保持一致，避免模型被固定
+        # 的 4 个示例误导，导致长文案只返回少量关键词，影响素材覆盖度。
+        example_terms = [
+            "opening visual topic",
+            *[
+                f"script visual topic {index}"
+                for index in range(2, max(amount, 1))
+            ],
+            "final visual topic",
+        ]
+        output_example = json.dumps(example_terms[:amount], ensure_ascii=False)
+    else:
+        goal = (
+            f"Generate {amount} search terms for stock videos, depending on the "
+            "subject of a video."
+        )
+        ordering_rule = ""
+        output_example = (
+            '["search term 1", "search term 2", "search term 3",'
+            '"search term 4", "search term 5"]'
+        )
+
     prompt = f"""
 # Role: Video Search Terms Generator
 
 ## Goals:
-Generate {amount} search terms for stock videos, depending on the subject of a video.
+{goal}
 
 ## Constrains:
 1. the search terms are to be returned as a json-array of strings.
@@ -707,9 +806,10 @@ Generate {amount} search terms for stock videos, depending on the subject of a v
 3. you must only return the json-array of strings. you must not return anything else. you must not return the script.
 4. the search terms must be related to the subject of the video.
 5. reply with english search terms only.
+{ordering_rule}
 
 ## Output Example:
-["search term 1", "search term 2", "search term 3","search term 4","search term 5"]
+{output_example}
 
 ## Context:
 ### Video Subject
@@ -721,7 +821,9 @@ Generate {amount} search terms for stock videos, depending on the subject of a v
 Please note that you must use English for generating video search terms; Chinese is not accepted.
 """.strip()
 
-    logger.info(f"subject: {video_subject}")
+    logger.info(
+        f"subject: {video_subject}, match_script_order: {match_script_order}"
+    )
 
     search_terms = []
     response = ""
@@ -731,7 +833,7 @@ Please note that you must use English for generating video search terms; Chinese
             if "Error: " in response:
                 logger.error(f"failed to generate video script: {response}")
                 return response
-            search_terms = json.loads(response)
+            search_terms = json.loads(_strip_code_fence(response))
             if not isinstance(search_terms, list) or not all(
                 isinstance(term, str) for term in search_terms
             ):
@@ -741,7 +843,7 @@ Please note that you must use English for generating video search terms; Chinese
         except Exception as e:
             logger.warning(f"failed to generate video terms: {str(e)}")
             if response:
-                match = re.search(r"\[.*]", response)
+                match = re.search(r"\[.*]", response, re.DOTALL)
                 if match:
                     try:
                         search_terms = json.loads(match.group())
@@ -931,7 +1033,7 @@ def _parse_social_metadata(response: str, platform: str) -> dict:
 
     data = None
     try:
-        data = json.loads(response)
+        data = json.loads(_strip_code_fence(response))
     except Exception:
         # 部分模型会在 JSON 外层包一段说明文字或 markdown fence。
         # API 调用方只需要稳定结构，所以这里尝试提取第一个 JSON object。

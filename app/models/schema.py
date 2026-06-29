@@ -35,13 +35,13 @@ class VideoAspect(str, Enum):
     square = "1:1"
 
     def to_resolution(self):
-        if self == VideoAspect.landscape.value:
+        if self == VideoAspect.landscape:
             return 1920, 1080
-        elif self == VideoAspect.portrait.value:
+        elif self == VideoAspect.portrait:
             return 1080, 1920
-        elif self == VideoAspect.square.value:
+        elif self == VideoAspect.square:
             return 1080, 1080
-        return 1080, 1920
+        raise ValueError(f"unsupported video aspect: {self}")
 
 
 class _Config:
@@ -77,6 +77,7 @@ class VideoParams(BaseModel):
     video_concat_mode: Optional[VideoConcatMode] = VideoConcatMode.random.value
     video_transition_mode: Optional[VideoTransitionMode] = None
     video_clip_duration: Optional[int] = 5
+    match_materials_to_script: bool = False
     video_count: Optional[int] = 1
 
     video_source: Optional[str] = "pexels"
@@ -84,7 +85,7 @@ class VideoParams(BaseModel):
         None  # Materials used to generate the video
     )
     
-    custom_audio_file: Optional[str] = None  # Custom audio file path, will ignore video_script and disable subtitle
+    custom_audio_file: Optional[str] = None  # Custom audio file path, will ignore TTS and can still use Whisper subtitles
     video_language: Optional[str] = ""  # auto detect
 
     voice_name: Optional[str] = ""
@@ -167,7 +168,8 @@ class VideoTermsParams:
     {
       "video_subject": "",
       "video_script": "",
-      "amount": 5
+      "amount": 5,
+      "match_materials_to_script": false
     }
     """
 
@@ -176,6 +178,7 @@ class VideoTermsParams:
         "春天的花海，如诗如画般展现在眼前。万物复苏的季节里，大地披上了一袭绚丽多彩的盛装。金黄的迎春、粉嫩的樱花、洁白的梨花、艳丽的郁金香……"
     )
     amount: Optional[int] = 5
+    match_materials_to_script: bool = False
 
 
 class VideoSocialMetadataParams:

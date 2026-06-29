@@ -17,12 +17,6 @@
 Simply provide a <b>topic</b> or <b>keyword</b> for a video, and it will automatically generate the video copy, video
 materials, video subtitles, and video background music before synthesizing a high-definition short video.
 
-<p align="center">
-  <sub>
-    Thanks to <a href="https://aihubmix.com/?aff=CEve">AIHubMix</a> for sponsoring this project. AIHubMix deeply adapts to OpenAI, Claude, Gemini, DeepSeek, Zhipu, Qwen, and other leading models, providing one-stop access to GPT-5.5, deepseek-v4-flash, and 700+ models including free options with production-grade stability.
-  </sub>
-</p>
-
 ### WebUI
 
 ![](docs/webui-en.jpg)
@@ -32,6 +26,65 @@ materials, video subtitles, and video background music before synthesizing a hig
 ![](docs/api.jpg)
 
 </div>
+
+## Special Thanks 🙏
+
+<table align="center">
+  <tr>
+    <td align="center" width="160">
+      <a href="https://aihubmix.com/?aff=CEve"><strong>AIHubMix</strong></a>
+    </td>
+    <td align="left">
+      <sub>Thanks to <a href="https://aihubmix.com/?aff=CEve">AIHubMix</a> for sponsoring this project. AIHubMix deeply adapts to OpenAI, Claude, Gemini, DeepSeek, Zhipu, Qwen, and other leading models, providing one-stop access to GPT-5.5, deepseek-v4-flash, and 700+ models including free options with production-grade stability.</sub>
+    </td>
+  </tr>
+
+  <tr>
+    <td align="center" width="160">
+      <a href="https://www.byteplus.com/en/product/modelark?utm_campaign=hw&utm_content=MoneyPrinterTurbo&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=MoneyPrinterTurbo"><img src="docs/sponsors/byteplus-logo.svg" alt="BytePlus" height="25"></a><br>
+      <a href="https://www.byteplus.com/en/product/modelark?utm_campaign=hw&utm_content=MoneyPrinterTurbo&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=MoneyPrinterTurbo"><strong>BytePlus ModelArk</strong></a>
+    </td>
+    <td align="left">
+      <sub>Thanks to Dola Seed for sponsoring this project! <a href="https://www.byteplus.com/en/product/modelark?utm_campaign=hw&utm_content=MoneyPrinterTurbo&utm_medium=devrel_tool_web&utm_source=OWO&utm_term=MoneyPrinterTurbo">Dola Seed 2.0</a> is a full-modal general large model independently developed by ByteDance for the global market. Built on a unified multimodal architecture, it supports joint understanding and generation of text, images, audio, and video. It natively enables agent collaboration, with strong reasoning, long-task execution, tool integration, and coding capabilities. Register via this link to get 500,000 tokens of free inference quota per model.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="160">
+      <a href="https://www.ccsub.net/register?ref=VCVDAWWY"><img src="docs/sponsors/ccsub-logo.png" alt="CCSub" height="36"></a><br>
+      <a href="https://www.ccsub.net/register?ref=VCVDAWWY"><strong>CCSub</strong></a>
+    </td>
+    <td align="left">
+      <sub>Thanks to <a href="https://www.ccsub.net/register?ref=VCVDAWWY">CCSub</a> for sponsoring this project! CCSub is a stable, affordable AI API relay platform — your drop-in replacement for a Claude.ai subscription. One API key gives you access to Claude Opus 4.8, Sonnet, Haiku, GPT-5, and Gemini at roughly 30% of direct API cost, with no VPN required from anywhere in the world. Compatible with Claude Code, Codex, Cursor, Cline, Continue, Windsurf, and all major AI coding tools. Register at <a href="https://www.ccsub.net/register?ref=VCVDAWWY">www.ccsub.net</a> and get $5 free credit on sign-up.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="160">
+      <a href="https://www.compshare.cn/coding-plan?ytag=GPU_YY-git_MoneyPrinterTu"><img src="docs/sponsors/compshare-logo.png" alt="Compshare" height="34"></a><br>
+      <a href="https://www.compshare.cn/coding-plan?ytag=GPU_YY-git_MoneyPrinterTu"><strong>Compshare</strong></a>
+    </td>
+    <td align="left">
+      <sub>Thanks to <a href="https://www.compshare.cn/coding-plan?ytag=GPU_YY-git_MoneyPrinterTu">Compshare</a> for sponsoring this project! Compshare is an AI cloud platform under UCloud that provides one-stop API access to mainstream Chinese and international models with a single key. Its CodingPlan package focuses on cost-effective Chinese models such as GLM5.2 and Deepseek-v4, while also offering stable official relay channels for overseas models across different development scenarios. It is compatible with Claude Code, Codex, and other mainstream AI coding tools and general API calls, with enterprise-grade high concurrency, 24/7 technical support, and self-service invoicing. <a href="https://www.compshare.cn/coding-plan?ytag=GPU_YY-git_MoneyPrinterTu">Register now</a> to receive up to ¥10 in free trial credits.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="160">
+      <a href="https://reccloud.com"><img src="docs/sponsors/reccloud-logo.svg" alt="RecCloud" height="36"></a><br>
+      <a href="https://reccloud.com"><strong>RecCloud</strong></a>
+    </td>
+    <td align="left">
+      <sub>Due to the <strong>deployment</strong> and <strong>usage</strong> of this project, there is a certain threshold for some beginner users. We would like to express our special thanks to <a href="https://reccloud.com">RecCloud (AI-Powered Multimedia Service Platform)</a> for providing a free <code>AI Video Generator</code> service based on this project. It allows for online use without deployment, which is very convenient.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="160">
+      <a href="https://picwish.com"><img src="docs/sponsors/picwish-logo.svg" alt="Picwish" height="36"></a><br>
+      <a href="https://picwish.com"><strong>Picwish</strong></a>
+    </td>
+    <td align="left">
+      <sub>Thanks to <a href="https://picwish.com">Picwish</a> for supporting and sponsoring this project, enabling continuous updates and maintenance. Picwish focuses on the <strong>image processing field</strong>, providing a rich set of <strong>image processing tools</strong> that extremely simplify complex operations, truly making image processing easier.</sub>
+    </td>
+  </tr>
+</table>
 
 ## Features 🎯
 
@@ -50,8 +103,9 @@ materials, video subtitles, and video background music before synthesizing a hig
       supports `subtitle outlining`
 - [x] Supports **background music**, either random or specified music files, with adjustable `background music volume`
 - [x] Video material sources are **high-definition** and **royalty-free**, and you can also use your own **local materials**
-- [x] Supports multiple stock video providers: **Pexels**, **Pixabay**, and **Coverr** (free HD/4K stock videos, subject to [Coverr license terms](https://coverr.co/license); mostly 16:9 landscape; register at [coverr.co/developers](https://coverr.co/developers?ctx=header_navigation), Demo tier 50 requests/hour)
-- [x] Supports integration with various models such as **OpenAI**, **AIHubMix**, **Moonshot**, **Azure**, **gpt4free**, **one-api**, **Qwen**, **Google Gemini**, **Ollama**, **DeepSeek**, **MiniMax**, **ERNIE**, **Pollinations**, **ModelScope** and more
+- [x] Supports multiple stock video providers: **Pexels**, **Pixabay**, and **Coverr**
+- [x] Optional **TwelveLabs** video AI integration: use **Marengo** embeddings to semantically rank B-roll search terms against your subject, and **Pegasus** to QA/describe clips ([TwelveLabs API key](https://twelvelabs.io))
+- [x] Supports integration with various models such as **OpenAI**, **AIHubMix**, **AIML API**, **EvoLink**, **Moonshot**, **Azure**, **gpt4free**, **one-api**, **Qwen**, **Google Gemini**, **Ollama**, **DeepSeek**, **MiniMax**, **ERNIE**, **Pollinations**, **ModelScope** and more
 
 ## Video Demos 📺
 
@@ -119,9 +173,9 @@ Want to try MoneyPrinterTurbo without setting up a local environment? Run it dir
 
 ### Windows
 
-The downloadable package is still the older `v1.2.6` bundled build. After downloading, run `update.bat` first to bring it up to the latest code.
+Download the latest Windows one-click package from GitHub Releases, then extract it directly.
 
-Google Drive (v1.2.6): https://drive.google.com/file/d/1HsbzfT7XunkrCrHw5ncUjFX8XX4zAuUh/view?usp=sharing
+- GitHub Release: https://github.com/harry0703/MoneyPrinterTurbo/releases/latest
 
 After downloading, it is recommended to **double-click** `update.bat` first to update to the **latest code**, then double-click `start.bat` to launch
 
@@ -160,10 +214,12 @@ If you are using a Windows system, please refer to Microsoft's documentation:
 
 ```shell
 cd MoneyPrinterTurbo
-docker-compose up
+docker compose -f docker-compose.release.yml up
 ```
 
-> Note：The latest version of docker will automatically install docker compose in the form of a plug-in, and the start command is adjusted to `docker compose up `
+> The recommended default is `docker-compose.release.yml`, which pulls the prebuilt image from GitHub Container Registry: `ghcr.io/harry0703/moneyprinterturbo:latest`.
+> If you need to build the image locally, you can still run `docker compose up`.
+> Before the first start, make sure `config.toml` exists in the project root. You can copy it from `config.example.toml`.
 
 #### ② Access the Web Interface
 
@@ -217,7 +273,7 @@ To allow other devices on your LAN to access the WebUI, run `set MPT_WEBUI_HOST=
 ###### MacOS or Linux
 
 ```shell
-uv run streamlit run ./webui/Main.py --browser.gatherUsageStats=False
+uv run streamlit run ./webui/Main.py --browser.gatherUsageStats=False --server.showEmailPrompt=False
 ```
 
 If you have already activated the virtual environment manually, you can still run:
@@ -257,27 +313,6 @@ uv run python cli.py \
   --video-materials "1.mp4,2.mp4" \
   --stop-at video
 ```
-
-## Special Thanks 🙏
-
-Due to the **deployment** and **usage** of this project, there is a certain threshold for some beginner users. We would
-like to express our special thanks to
-
-**RecCloud (AI-Powered Multimedia Service Platform)** for providing a free `AI Video Generator` service based on this
-project. It allows for online use without deployment, which is very convenient.
-
-- Chinese version: https://reccloud.cn
-- English version: https://reccloud.com
-
-![](docs/reccloud.com.jpg)
-
-## Thanks for Sponsorship 🙏
-
-Thanks to Picwish https://picwish.com for supporting and sponsoring this project, enabling continuous updates and maintenance.
-
-Picwish focuses on the **image processing field**, providing a rich set of **image processing tools** that extremely simplify complex operations, truly making image processing easier.
-
-![picwish.jpg](docs/picwish.com.jpg)
 
 ## Voice Synthesis 🗣
 
