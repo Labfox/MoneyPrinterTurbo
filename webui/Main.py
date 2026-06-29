@@ -1017,6 +1017,21 @@ with middle_panel:
             video_concat_modes[selected_index][1]
         )
 
+        # 语义匹配：用本地 embedding 让画面与当前旁白内容相关
+        # Place clips where the narration talks about something related, using
+        # local sentence-transformers embeddings. Requires the optional
+        # 'semantic' extra; gracefully falls back to the chosen concat mode.
+        params.video_semantic_match = st.checkbox(
+            tr("Semantic Match (align clips to narration)"),
+            value=False,
+            help=tr(
+                "Use local embeddings to play each clip when the narration is "
+                "talking about something related. Needs sentence-transformers "
+                "(pip install sentence-transformers); falls back to the concat "
+                "mode above when unavailable."
+            ),
+        )
+
         # 视频转场模式
         video_transition_modes = [
             (tr("None"), VideoTransitionMode.none.value),

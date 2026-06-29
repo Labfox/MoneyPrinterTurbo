@@ -234,6 +234,14 @@ def generate_subtitle(task_id, params, video_script, sub_maker, audio_file):
 
 
 def get_video_materials(task_id, params, video_terms, audio_duration):
+    """
+    Resolve the video material pool for the task.
+
+    Returns a tuple of (video_paths, clip_terms) where clip_terms maps each file
+    path to the search term it was downloaded for. The mapping powers the
+    optional semantic matching (see app/services/material_match.py) and is empty
+    for local materials, where no search term is available.
+    """
     if params.video_source == "local":
         logger.info("\n\n## preprocess local materials")
         materials = video.preprocess_video(
@@ -244,13 +252,13 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
             logger.error(
                 "no valid materials found, please check the materials and try again."
             )
-            return None
-        return [material_info.url for material_info in materials]
+            return None, {}
+        return [material_info.url for material_info in materials], {}
     else:
         logger.info(f"\n\n## downloading videos from {params.video_source}")
         # 顺序匹配模式只在用户显式开启时生效。这里强制素材下载按关键词顺序
         # 轮询，避免某个早期关键词下载太多素材，把后续脚本主题挤出最终时间线。
-        downloaded_videos = material.download_videos(
+        downloaded_videos, clip_terms = material.download_videos_with_terms(
             task_id=task_id,
             search_terms=video_terms,
             source=params.video_source,
@@ -269,12 +277,12 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
             logger.error(
                 "failed to download videos, maybe the network is not available. if you are in China, please use a VPN."
             )
-            return None
-        return downloaded_videos
+            return None, {}
+        return downloaded_videos, clip_terms
 
 
 def generate_final_videos(
-    task_id, params, downloaded_videos, audio_file, subtitle_path
+    task_id, params, downloaded_videos, audio_file, subtitle_path, clip_terms=None
 ):
     final_video_paths = []
     combined_video_paths = []
@@ -304,6 +312,9 @@ def generate_final_videos(
             video_transition_mode=video_transition_mode,
             max_clip_duration=params.video_clip_duration,
             threads=params.n_threads,
+            subtitle_path=subtitle_path,
+            clip_descriptions=clip_terms,
+            semantic_match=getattr(params, "video_semantic_match", False),
         )
 
         _progress += 50 / params.video_count / 2
@@ -401,7 +412,7 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
     sm.state.update_task(task_id, state=const.TASK_STATE_PROCESSING, progress=40)
 
     # 5. Get video materials
-    downloaded_videos = get_video_materials(
+    downloaded_videos, clip_terms = get_video_materials(
         task_id, params, video_terms, audio_duration
     )
     if not downloaded_videos:
@@ -426,7 +437,7 @@ def start(task_id, params: VideoParams, stop_at: str = "video"):
 
     # 6. Generate final videos
     final_video_paths, combined_video_paths = generate_final_videos(
-        task_id, params, downloaded_videos, audio_file, subtitle_path
+        task_id, params, downloaded_videos, audio_file, subtitle_path, clip_terms
     )
 
     if not final_video_paths:

@@ -532,6 +532,50 @@ def get_bgm_file(bgm_type: str = "random", bgm_file: str = ""):
     return ""
 
 
+def _build_semantic_subclips(
+    subtitle_path: str,
+    audio_duration: float,
+    clip_descriptions: dict,
+    clip_durations: dict,
+    clip_sizes: dict,
+    max_clip_duration: int,
+):
+    """
+    Build a timeline-aligned list of SubClippedVideoClip using embeddings.
+
+    Each entry corresponds to one window of the audio timeline and points at the
+    source clip whose description best matches what is being said during that
+    window. Returns None to signal the caller to fall back to the normal random
+    ordering (e.g. when sentence-transformers is missing or no subtitles exist).
+    """
+    from app.services import material_match
+
+    placements = material_match.build_semantic_placements(
+        subtitle_path=subtitle_path,
+        audio_duration=audio_duration,
+        clip_descriptions=clip_descriptions or {},
+        clip_durations=clip_durations,
+        max_clip_duration=max_clip_duration,
+    )
+    if not placements:
+        return None
+
+    items = []
+    for placement in placements:
+        width, height = clip_sizes.get(placement.source_path, (None, None))
+        items.append(
+            SubClippedVideoClip(
+                file_path=placement.source_path,
+                start_time=placement.start_time,
+                end_time=placement.end_time,
+                width=width,
+                height=height,
+                source_file_path=placement.source_path,
+            )
+        )
+    return items
+
+
 def combine_videos(
     combined_video_path: str,
     video_paths: List[str],
@@ -541,6 +585,9 @@ def combine_videos(
     video_transition_mode: VideoTransitionMode = None,
     max_clip_duration: int = 5,
     threads: int = 2,
+    subtitle_path: str = "",
+    clip_descriptions: dict = None,
+    semantic_match: bool = False,
 ) -> str:
     audio_clip = AudioFileClip(audio_file)
     try:
@@ -567,12 +614,18 @@ def combine_videos(
     processed_clips = []
     subclipped_items = []
     video_duration = 0
+    # Cache per-source metadata while we probe each file once; the semantic
+    # matcher needs durations/sizes to place clips along the audio timeline.
+    clip_durations: dict = {}
+    clip_sizes: dict = {}
     for video_path in video_paths:
         clip = _open_video_clip_quietly(video_path)
         clip_duration = clip.duration
         clip_w, clip_h = clip.size
         close_clip(clip)
-        
+        clip_durations[video_path] = clip_duration
+        clip_sizes[video_path] = (clip_w, clip_h)
+
         start_time = 0
 
         while start_time < clip_duration:
@@ -597,11 +650,30 @@ def combine_videos(
             if video_concat_mode.value == VideoConcatMode.sequential.value:
                 break
 
-    subclipped_items = _prioritize_unique_source_clips(
-        subclipped_items=subclipped_items,
-        concat_mode=video_concat_mode,
-    )
-        
+    semantic_items = None
+    if semantic_match:
+        # Try to lay clips out so that what is shown matches what the narration
+        # is talking about at each moment. Returns None when the feature is
+        # unavailable (no embeddings backend / no subtitle / no descriptions),
+        # in which case we transparently keep the existing ordering.
+        semantic_items = _build_semantic_subclips(
+            subtitle_path=subtitle_path,
+            audio_duration=audio_duration,
+            clip_descriptions=clip_descriptions,
+            clip_durations=clip_durations,
+            clip_sizes=clip_sizes,
+            max_clip_duration=max_clip_duration,
+        )
+
+    if semantic_items is not None:
+        subclipped_items = semantic_items
+        logger.info("using semantic (embedding) clip ordering aligned to narration")
+    else:
+        subclipped_items = _prioritize_unique_source_clips(
+            subclipped_items=subclipped_items,
+            concat_mode=video_concat_mode,
+        )
+
     logger.debug(f"total subclipped items: {len(subclipped_items)}")
     
     # Add downloaded clips over and over until the duration of the audio (max_duration) has been reached

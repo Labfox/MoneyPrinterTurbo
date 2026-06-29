@@ -43,6 +43,12 @@ g4f = [
 twelvelabs = [
     "twelvelabs>=1.2.8",
 ]
+# Optional local embeddings backend for semantic video-to-audio matching
+# (video_semantic_match). Pulls in torch, so it is opt-in:
+#   uv sync --extra semantic
+semantic = [
+    "sentence-transformers>=3.0.0",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

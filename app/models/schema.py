@@ -76,6 +76,12 @@ class VideoParams(BaseModel):
     video_aspect: Optional[VideoAspect] = VideoAspect.portrait.value
     video_concat_mode: Optional[VideoConcatMode] = VideoConcatMode.random.value
     video_transition_mode: Optional[VideoTransitionMode] = None
+    # When enabled, video clips are placed along the audio timeline so that what
+    # is shown semantically matches what the narration is talking about at that
+    # moment (uses local sentence-transformers embeddings). Falls back to the
+    # normal random/sequential ordering when embeddings or descriptions are
+    # unavailable. See app/services/material_match.py.
+    video_semantic_match: Optional[bool] = False
     video_clip_duration: Optional[int] = 5
     match_materials_to_script: bool = False
     video_count: Optional[int] = 1
