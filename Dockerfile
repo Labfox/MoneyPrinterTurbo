@@ -55,6 +55,20 @@ RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ --trus
     pip install --no-cache-dir -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/ --trusted-host mirrors.tuna.tsinghua.edu.cn --retries 3 --timeout 60 -r requirements.txt || \
     pip install --no-cache-dir --retries 3 --timeout 60 -r requirements.txt
 
+# Optional local embeddings backend for semantic video-to-audio matching
+# (video_semantic_match). Enabled by default; pulls in torch + sentence-transformers,
+# which adds significant image size. Disable with: --build-arg WITH_SEMANTIC=false
+ARG WITH_SEMANTIC=true
+RUN if [ "$WITH_SEMANTIC" = "true" ]; then \
+        SEMANTIC_PKG="sentence-transformers>=3.0.0"; \
+        pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com --retries 3 --timeout 120 "$SEMANTIC_PKG" || \
+        pip install --no-cache-dir -i https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/ --trusted-host mirrors.tuna.tsinghua.edu.cn --retries 3 --timeout 120 "$SEMANTIC_PKG" || \
+        pip install --no-cache-dir --retries 3 --timeout 120 "$SEMANTIC_PKG"; \
+        # Pre-download the default embedding model so the running container does
+        # not need network access on first use (best-effort; ignore failures).
+        python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')" || true; \
+    fi
+
 # Now copy the rest of the codebase into the image
 COPY . .
 

@@ -129,6 +129,60 @@ class TestMaterialTlsVerification(unittest.TestCase):
 
         self.assertEqual(result, [])
 
+    def test_download_videos_with_terms_maps_path_to_search_term(self):
+        """
+        download_videos_with_terms 必须保留“每个下载文件来自哪个搜索词”的映射，
+        这是语义匹配 (video_semantic_match) 把素材和旁白内容对齐的输入。
+        """
+        config.app.pop("material_directory", None)
+        config.proxy.clear()
+
+        cat_item = material.MaterialInfo()
+        cat_item.provider = "pexels"
+        cat_item.url = "https://example.com/cat.mp4"
+        cat_item.duration = 10
+
+        money_item = material.MaterialInfo()
+        money_item.provider = "pexels"
+        money_item.url = "https://example.com/money.mp4"
+        money_item.duration = 10
+
+        def fake_search(search_term, minimum_duration, video_aspect):
+            return {"cat": [cat_item], "money": [money_item]}.get(search_term, [])
+
+        saved = {
+            "https://example.com/cat.mp4": "/tmp/cat-saved.mp4",
+            "https://example.com/money.mp4": "/tmp/money-saved.mp4",
+        }
+
+        with patch(
+            "app.services.material.search_videos_pexels", side_effect=fake_search
+        ), patch(
+            "app.services.material.save_video",
+            side_effect=lambda video_url, save_dir="": saved[video_url],
+        ):
+            paths, clip_terms = material.download_videos_with_terms(
+                task_id="t-terms",
+                search_terms=["cat", "money"],
+                source="pexels",
+                video_contact_mode="sequential",
+                audio_duration=100,
+                max_clip_duration=5,
+            )
+
+        self.assertEqual(set(paths), {"/tmp/cat-saved.mp4", "/tmp/money-saved.mp4"})
+        self.assertEqual(clip_terms["/tmp/cat-saved.mp4"], "cat")
+        self.assertEqual(clip_terms["/tmp/money-saved.mp4"], "money")
+
+    def test_download_videos_wrapper_still_returns_plain_list(self):
+        """旧调用方仍然只拿到路径列表，保持向后兼容。"""
+        result = material.download_videos(
+            task_id="wrapper-compat",
+            search_terms=[],
+            video_contact_mode="random",
+        )
+        self.assertIsInstance(result, list)
+
 
 class TestCoverrProvider(unittest.TestCase):
     """

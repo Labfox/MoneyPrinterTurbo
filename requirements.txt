@@ -20,3 +20,8 @@ litellm==1.86.2
 
 # Optional unofficial g4f provider is intentionally not installed by default.
 # Use `uv sync --extra g4f` only when you explicitly accept that provider risk.
+
+# Optional local embeddings backend for semantic video-to-audio matching
+# (video_semantic_match). Not installed by default because it pulls in torch.
+# Enable with `uv sync --extra semantic` or `pip install sentence-transformers`.
+# sentence-transformers>=3.0.0

@@ -1,7 +1,7 @@
 import os
 import random
 import threading
-from typing import List
+from typing import Dict, List, Tuple
 from urllib.parse import urlencode
 
 import requests
@@ -310,8 +310,40 @@ def download_videos(
     audio_duration: float = 0.0,
     max_clip_duration: int = 5,
 ) -> List[str]:
+    video_paths, _ = download_videos_with_terms(
+        task_id=task_id,
+        search_terms=search_terms,
+        source=source,
+        video_aspect=video_aspect,
+        video_contact_mode=video_contact_mode,
+        audio_duration=audio_duration,
+        max_clip_duration=max_clip_duration,
+    )
+    return video_paths
+
+
+def download_videos_with_terms(
+    task_id: str,
+    search_terms: List[str],
+    source: str = "pexels",
+    video_aspect: VideoAspect = VideoAspect.portrait,
+    video_contact_mode: VideoConcatMode = VideoConcatMode.random,
+    audio_duration: float = 0.0,
+    max_clip_duration: int = 5,
+) -> Tuple[List[str], Dict[str, str]]:
+    """
+    Download stock videos and keep track of which search term each clip came from.
+
+    Returns the list of saved file paths plus a {file_path: search_term} mapping.
+    The mapping is what the semantic-match feature later embeds to align clips
+    with the narration; the plain `download_videos` wrapper above drops it for
+    callers that don't need it.
+    """
     valid_video_items = []
     valid_video_urls = []
+    # Remember the term that surfaced each candidate url so the downloaded clip
+    # can be described later, even after random shuffling.
+    url_terms: Dict[str, str] = {}
     found_duration = 0.0
     search_videos = search_videos_pexels
     if source == "pixabay":
@@ -331,6 +363,7 @@ def download_videos(
             if item.url not in valid_video_urls:
                 valid_video_items.append(item)
                 valid_video_urls.append(item.url)
+                url_terms[item.url] = search_term
                 found_duration += item.duration
 
     logger.info(
@@ -348,6 +381,7 @@ def download_videos(
     if concat_mode_value == VideoConcatMode.random.value:
         random.shuffle(valid_video_items)
 
+    clip_terms: Dict[str, str] = {}
     total_duration = 0.0
     for item in valid_video_items:
         try:
@@ -358,6 +392,9 @@ def download_videos(
             if saved_video_path:
                 logger.info(f"video saved: {saved_video_path}")
                 video_paths.append(saved_video_path)
+                # Keep the first term that produced this file; multiple urls can
+                # map to the same cached path via md5 de-duplication.
+                clip_terms.setdefault(saved_video_path, url_terms.get(item.url, ""))
                 seconds = min(max_clip_duration, item.duration)
                 total_duration += seconds
                 if total_duration > audio_duration:
@@ -368,7 +405,7 @@ def download_videos(
         except Exception as e:
             logger.error(f"failed to download video: {utils.to_json(item)} => {str(e)}")
     logger.success(f"downloaded {len(video_paths)} videos")
-    return video_paths
+    return video_paths, clip_terms
 
 
 if __name__ == "__main__":
