@@ -82,6 +82,11 @@ class VideoParams(BaseModel):
     # normal random/sequential ordering when embeddings or descriptions are
     # unavailable. See app/services/material_match.py.
     video_semantic_match: Optional[bool] = False
+    # When enabled, the LLM that generated the search keywords also drives the
+    # material search interactively: after each search round it sees how many
+    # videos each term returned and proposes refined terms until enough footage
+    # is found. See material.download_videos_interactively.
+    video_llm_search: Optional[bool] = False
     video_clip_duration: Optional[int] = 5
     video_count: Optional[int] = 1
 

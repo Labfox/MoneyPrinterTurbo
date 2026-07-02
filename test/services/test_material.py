@@ -184,6 +184,120 @@ class TestMaterialTlsVerification(unittest.TestCase):
         self.assertIsInstance(result, list)
 
 
+def _make_item(url: str, duration: int = 10) -> material.MaterialInfo:
+    item = material.MaterialInfo()
+    item.provider = "pexels"
+    item.url = url
+    item.duration = duration
+    return item
+
+
+class TestInteractiveSearch(unittest.TestCase):
+    """
+    download_videos_interactively: 生成关键词的同一个 LLM 参与搜索循环，
+    根据每轮各搜索词命中的素材量继续改进搜索词，直到素材时长足够。
+    """
+
+    def setUp(self):
+        self.original_app_config = dict(config.app)
+        config.app.pop("material_directory", None)
+
+    def tearDown(self):
+        config.app.clear()
+        config.app.update(self.original_app_config)
+
+    def test_no_llm_call_when_first_round_is_enough(self):
+        def fake_search(search_term, minimum_duration, video_aspect):
+            return {
+                "cat": [_make_item("https://e.com/cat1.mp4"), _make_item("https://e.com/cat2.mp4")]
+            }.get(search_term, [])
+
+        with patch(
+            "app.services.material.search_videos_pexels", side_effect=fake_search
+        ), patch(
+            "app.services.material.save_video",
+            side_effect=lambda video_url, save_dir="": f"/tmp/{video_url.rsplit('/', 1)[-1]}",
+        ), patch(
+            "app.services.llm.generate_terms_with_feedback"
+        ) as llm_mock:
+            paths, clip_terms = material.download_videos_interactively(
+                task_id="t-interactive",
+                video_subject="cats",
+                video_script="a script about cats",
+                initial_terms=["cat"],
+                video_contact_mode="sequential",
+                audio_duration=10,  # 2 clips x 5s usable covers it
+                max_clip_duration=5,
+            )
+
+        llm_mock.assert_not_called()
+        self.assertEqual(len(paths), 2)
+        self.assertTrue(all(term == "cat" for term in clip_terms.values()))
+
+    def test_llm_refines_terms_until_duration_covered(self):
+        def fake_search(search_term, minimum_duration, video_aspect):
+            return {
+                "cat": [_make_item("https://e.com/cat1.mp4"), _make_item("https://e.com/cat2.mp4")],
+                "dog": [_make_item("https://e.com/dog1.mp4"), _make_item("https://e.com/dog2.mp4")],
+            }.get(search_term, [])
+
+        with patch(
+            "app.services.material.search_videos_pexels", side_effect=fake_search
+        ), patch(
+            "app.services.material.save_video",
+            side_effect=lambda video_url, save_dir="": f"/tmp/{video_url.rsplit('/', 1)[-1]}",
+        ), patch(
+            "app.services.llm.generate_terms_with_feedback",
+            # "cat" is already tried and must be filtered; "dog" fills the gap.
+            return_value=["cat", "dog"],
+        ) as llm_mock:
+            paths, clip_terms = material.download_videos_interactively(
+                task_id="t-interactive",
+                video_subject="pets",
+                video_script="a script about pets",
+                initial_terms=["cat"],
+                video_contact_mode="sequential",
+                audio_duration=20,  # round 1 only yields 10s usable
+                max_clip_duration=5,
+            )
+
+        llm_mock.assert_called_once()
+        feedback = llm_mock.call_args.kwargs
+        self.assertEqual(feedback["remaining_seconds"], 10)
+        self.assertEqual(
+            [entry["term"] for entry in feedback["search_history"]], ["cat"]
+        )
+        self.assertEqual(len(paths), 4)
+        self.assertEqual(set(clip_terms.values()), {"cat", "dog"})
+
+    def test_stops_when_llm_has_no_new_terms(self):
+        def fake_search(search_term, minimum_duration, video_aspect):
+            return {"cat": [_make_item("https://e.com/cat1.mp4")]}.get(search_term, [])
+
+        with patch(
+            "app.services.material.search_videos_pexels", side_effect=fake_search
+        ), patch(
+            "app.services.material.save_video",
+            side_effect=lambda video_url, save_dir="": f"/tmp/{video_url.rsplit('/', 1)[-1]}",
+        ), patch(
+            "app.services.llm.generate_terms_with_feedback",
+            return_value=["cat"],  # only repeats an already-tried term
+        ) as llm_mock:
+            paths, _ = material.download_videos_interactively(
+                task_id="t-interactive",
+                video_subject="cats",
+                video_script="a script about cats",
+                initial_terms=["cat"],
+                video_contact_mode="sequential",
+                audio_duration=100,
+                max_clip_duration=5,
+            )
+
+        # One refinement attempt, then the loop stops instead of spinning.
+        llm_mock.assert_called_once()
+        self.assertEqual(paths, ["/tmp/cat1.mp4"])
+
+
 class TestCoverrProvider(unittest.TestCase):
     """
     Coverr 视频素材源(spec: 2026-06-09-coverr-video-provider-design.md)。

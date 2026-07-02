@@ -907,6 +907,19 @@ with middle_panel:
             ),
         )
 
+        # LLM 交互式搜索：让生成关键词的 LLM 根据每轮搜索结果继续改进搜索词
+        # Let the keyword-generating LLM refine the search terms based on how
+        # many videos each term actually returned, until enough footage exists.
+        params.video_llm_search = st.checkbox(
+            tr("LLM Interactive Search (refine terms by results)"),
+            value=False,
+            help=tr(
+                "After each search round, the LLM that generated the keywords "
+                "sees how many videos each term found and proposes better "
+                "terms until enough footage is collected."
+            ),
+        )
+
         # 视频转场模式
         video_transition_modes = [
             (tr("None"), VideoTransitionMode.none.value),

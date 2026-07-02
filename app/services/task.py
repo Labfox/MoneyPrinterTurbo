@@ -186,15 +186,31 @@ def get_video_materials(task_id, params, video_terms, audio_duration):
         return [material_info.url for material_info in materials], {}
     else:
         logger.info(f"\n\n## downloading videos from {params.video_source}")
-        downloaded_videos, clip_terms = material.download_videos_with_terms(
-            task_id=task_id,
-            search_terms=video_terms,
-            source=params.video_source,
-            video_aspect=params.video_aspect,
-            video_contact_mode=params.video_concat_mode,
-            audio_duration=audio_duration * params.video_count,
-            max_clip_duration=params.video_clip_duration,
-        )
+        if getattr(params, "video_llm_search", False):
+            # LLM-in-the-loop search: the same LLM that generated the keywords
+            # sees each round's search results and refines the terms until
+            # enough footage is found.
+            downloaded_videos, clip_terms = material.download_videos_interactively(
+                task_id=task_id,
+                video_subject=params.video_subject,
+                video_script=params.video_script,
+                initial_terms=video_terms,
+                source=params.video_source,
+                video_aspect=params.video_aspect,
+                video_contact_mode=params.video_concat_mode,
+                audio_duration=audio_duration * params.video_count,
+                max_clip_duration=params.video_clip_duration,
+            )
+        else:
+            downloaded_videos, clip_terms = material.download_videos_with_terms(
+                task_id=task_id,
+                search_terms=video_terms,
+                source=params.video_source,
+                video_aspect=params.video_aspect,
+                video_contact_mode=params.video_concat_mode,
+                audio_duration=audio_duration * params.video_count,
+                max_clip_duration=params.video_clip_duration,
+            )
         if not downloaded_videos:
             sm.state.update_task(task_id, state=const.TASK_STATE_FAILED)
             logger.error(
