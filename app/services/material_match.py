@@ -135,14 +135,77 @@ def _build_windows(
     return windows
 
 
-def _cosine_best_indices(window_vecs, clip_vecs):
-    """Return, per window, the clip indices ranked by descending cosine sim."""
-    import numpy as np
-
+def _cosine_similarities(window_vecs, clip_vecs):
+    """Return the (n_windows, n_clips) cosine similarity matrix."""
     # Vectors are L2-normalised at encode time, so a dot product is the cosine.
-    sims = window_vecs @ clip_vecs.T  # (n_windows, n_clips)
-    ranked = np.argsort(-sims, axis=1)
-    return sims, ranked
+    return window_vecs @ clip_vecs.T
+
+
+def _assign_clips_to_windows(
+    windows: List[Tuple[float, float, str]], sims, n_clips: int
+) -> List[int]:
+    """
+    Assign one clip index to every window so that no clip is reused while any
+    unused clip remains.
+
+    Selection is global rather than first-window-wins: all (window, clip)
+    similarity pairs compete at once, so a clip goes to the window it matches
+    best across the whole timeline, not to whichever window happens to come
+    first. When there are more windows than clips, the pool is re-opened one
+    full pass at a time, so reuse starts only after every clip has been shown.
+    Windows with no spoken text are filled last, from the least-used clips, to
+    keep them from stealing a good match away from a spoken window.
+    """
+    n_windows = len(windows)
+    assignment = [-1] * n_windows
+    text_windows = [i for i, (_, _, t) in enumerate(windows) if t]
+    silent_windows = [i for i, (_, _, t) in enumerate(windows) if not t]
+
+    remaining = set(text_windows)
+    while remaining:
+        pairs = sorted(
+            ((w, c) for w in remaining for c in range(n_clips)),
+            key=lambda wc: -sims[wc[0]][wc[1]],
+        )
+        used_this_pass = set()
+        for w, c in pairs:
+            if w not in remaining or c in used_this_pass:
+                continue
+            assignment[w] = c
+            remaining.discard(w)
+            used_this_pass.add(c)
+            if len(used_this_pass) == n_clips:
+                break
+
+    # Silent windows rotate through whichever clips have been shown least.
+    use_counts = [0] * n_clips
+    for w in text_windows:
+        use_counts[assignment[w]] += 1
+    for w in silent_windows:
+        chosen = min(range(n_clips), key=lambda c: (use_counts[c], c))
+        assignment[w] = chosen
+        use_counts[chosen] += 1
+
+    # Global assignment ignores window order, so reused clips can land on
+    # adjacent windows; swap with a later window to break back-to-back repeats.
+    if n_clips > 1:
+        for i in range(1, n_windows):
+            if assignment[i] != assignment[i - 1]:
+                continue
+            for j in range(n_windows):
+                if assignment[j] == assignment[i]:
+                    continue
+                neighbours_j = {
+                    assignment[k] for k in (j - 1, j + 1) if 0 <= k < n_windows and k != i
+                }
+                neighbours_i = {
+                    assignment[k] for k in (i - 1, i + 1) if 0 <= k < n_windows and k != j
+                }
+                if assignment[i] not in neighbours_j and assignment[j] not in neighbours_i:
+                    assignment[i], assignment[j] = assignment[j], assignment[i]
+                    break
+
+    return assignment
 
 
 def build_semantic_placements(
@@ -203,30 +266,17 @@ def build_semantic_placements(
         clip_vecs = model.encode(
             descriptions, normalize_embeddings=True, show_progress_bar=False
         )
-        sims, ranked = _cosine_best_indices(window_vecs, clip_vecs)
+        sims = _cosine_similarities(window_vecs, clip_vecs)
     except Exception as exc:  # pragma: no cover - defensive
         logger.error(f"semantic match failed during embedding, falling back: {exc}")
         return None
 
+    assignment = _assign_clips_to_windows(windows, sims, len(clip_paths))
+
     placements: List[SemanticPlacement] = []
-    prev_idx = -1
     for w_index, (start, end, text) in enumerate(windows):
         window_dur = end - start
-        order = list(ranked[w_index])
-
-        # If this window has no spoken text, or no description is meaningfully
-        # related, just rotate through clips to keep visual variety.
-        if not text:
-            chosen = order[w_index % len(order)]
-        else:
-            chosen = order[0]
-            # Avoid showing the exact same source twice in a row when a close
-            # runner-up exists, so matched-but-repetitive clips don't stack up.
-            if chosen == prev_idx and len(order) > 1:
-                runner_up = order[1]
-                if sims[w_index][chosen] - sims[w_index][runner_up] < 0.05:
-                    chosen = runner_up
-        prev_idx = chosen
+        chosen = assignment[w_index]
 
         source_path = clip_paths[chosen]
         source_dur = float(clip_durations.get(source_path, 0.0)) or window_dur
