@@ -53,6 +53,10 @@ class MaterialInfo:
     provider: str = "pexels"
     url: str = ""
     duration: int = 0
+    # Human-readable title/tags from the provider (pexels page slug, pixabay
+    # tags, coverr title). Used by the LLM relevance check to keep downloaded
+    # material on topic; empty when the provider gives no usable metadata.
+    description: str = ""
 
 
 class VideoParams(BaseModel):

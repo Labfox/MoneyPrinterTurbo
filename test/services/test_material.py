@@ -219,7 +219,9 @@ class TestInteractiveSearch(unittest.TestCase):
             side_effect=lambda video_url, save_dir="": f"/tmp/{video_url.rsplit('/', 1)[-1]}",
         ), patch(
             "app.services.llm.generate_terms_with_feedback"
-        ) as llm_mock:
+        ) as llm_mock, patch(
+            "app.services.llm.select_relevant_videos", return_value=None
+        ):
             paths, clip_terms = material.download_videos_interactively(
                 task_id="t-interactive",
                 video_subject="cats",
@@ -250,7 +252,9 @@ class TestInteractiveSearch(unittest.TestCase):
             "app.services.llm.generate_terms_with_feedback",
             # "cat" is already tried and must be filtered; "dog" fills the gap.
             return_value=["cat", "dog"],
-        ) as llm_mock:
+        ) as llm_mock, patch(
+            "app.services.llm.select_relevant_videos", return_value=None
+        ):
             paths, clip_terms = material.download_videos_interactively(
                 task_id="t-interactive",
                 video_subject="pets",
@@ -282,7 +286,9 @@ class TestInteractiveSearch(unittest.TestCase):
         ), patch(
             "app.services.llm.generate_terms_with_feedback",
             return_value=["cat"],  # only repeats an already-tried term
-        ) as llm_mock:
+        ) as llm_mock, patch(
+            "app.services.llm.select_relevant_videos", return_value=None
+        ):
             paths, _ = material.download_videos_interactively(
                 task_id="t-interactive",
                 video_subject="cats",
@@ -296,6 +302,123 @@ class TestInteractiveSearch(unittest.TestCase):
         # One refinement attempt, then the loop stops instead of spinning.
         llm_mock.assert_called_once()
         self.assertEqual(paths, ["/tmp/cat1.mp4"])
+
+
+class TestTopicRelevanceFilter(unittest.TestCase):
+    """
+    filter_video_items_by_topic: 下载前由 LLM 根据素材标题/描述剔除跑题视频。
+    LLM 不可用或全部拒绝时必须失败开放（保留全部素材），不能清空素材池。
+    """
+
+    def test_drops_videos_llm_marks_off_topic(self):
+        items = [
+            _make_item("https://e.com/cat.mp4"),
+            _make_item("https://e.com/car.mp4"),
+        ]
+        items[0].description = "a cat playing"
+        items[1].description = "a sports car driving"
+
+        with patch(
+            "app.services.llm.select_relevant_videos", return_value=[0]
+        ) as llm_mock:
+            kept = material.filter_video_items_by_topic(
+                video_subject="cats",
+                video_script="a script about cats",
+                video_items=items,
+                url_terms={"https://e.com/cat.mp4": "cat"},
+            )
+
+        self.assertEqual([item.url for item in kept], ["https://e.com/cat.mp4"])
+        candidates = llm_mock.call_args.kwargs["candidates"]
+        self.assertEqual(candidates[0]["description"], "a cat playing")
+        self.assertEqual(candidates[0]["search_term"], "cat")
+
+    def test_keeps_all_when_llm_unavailable(self):
+        items = [_make_item("https://e.com/a.mp4"), _make_item("https://e.com/b.mp4")]
+        with patch("app.services.llm.select_relevant_videos", return_value=None):
+            kept = material.filter_video_items_by_topic(
+                "cats", "script", items, url_terms={}
+            )
+        self.assertEqual(kept, items)
+
+    def test_keeps_all_when_llm_rejects_everything(self):
+        items = [_make_item("https://e.com/a.mp4")]
+        with patch("app.services.llm.select_relevant_videos", return_value=[]):
+            kept = material.filter_video_items_by_topic(
+                "cats", "script", items, url_terms={}
+            )
+        self.assertEqual(kept, items)
+
+    def test_interactive_download_skips_filtered_videos(self):
+        def fake_search(search_term, minimum_duration, video_aspect):
+            return {
+                "cat": [
+                    _make_item("https://e.com/cat1.mp4"),
+                    _make_item("https://e.com/offtopic.mp4"),
+                ]
+            }.get(search_term, [])
+
+        with patch(
+            "app.services.material.search_videos_pexels", side_effect=fake_search
+        ), patch(
+            "app.services.material.save_video",
+            side_effect=lambda video_url, save_dir="": f"/tmp/{video_url.rsplit('/', 1)[-1]}",
+        ), patch(
+            "app.services.llm.select_relevant_videos", return_value=[0]
+        ):
+            paths, _ = material.download_videos_interactively(
+                task_id="t-filter",
+                video_subject="cats",
+                video_script="a script about cats",
+                initial_terms=["cat"],
+                video_contact_mode="sequential",
+                audio_duration=5,
+                max_clip_duration=5,
+            )
+
+        self.assertEqual(paths, ["/tmp/cat1.mp4"])
+
+
+class TestProviderDescriptions(unittest.TestCase):
+    def setUp(self):
+        self.original_app_config = dict(config.app)
+
+    def tearDown(self):
+        config.app.clear()
+        config.app.update(self.original_app_config)
+
+    def test_pexels_page_title_from_slug(self):
+        self.assertEqual(
+            material._pexels_page_title(
+                "https://www.pexels.com/video/a-woman-doing-yoga-855/"
+            ),
+            "a woman doing yoga",
+        )
+        self.assertEqual(material._pexels_page_title(""), "")
+
+    def test_pixabay_search_captures_tags_as_description(self):
+        config.app["pixabay_api_keys"] = ["pixabay-key"]
+        fake_response = SimpleNamespace(
+            json=lambda: {
+                "hits": [
+                    {
+                        "duration": 8,
+                        "tags": "cat, kitten, pet",
+                        "videos": {
+                            "large": {
+                                "width": 1920,
+                                "url": "https://example.com/video.mp4",
+                            }
+                        },
+                    }
+                ]
+            }
+        )
+        with patch(
+            "app.services.material.requests.get", return_value=fake_response
+        ):
+            results = material.search_videos_pixabay("cat", minimum_duration=1)
+        self.assertEqual(results[0].description, "cat, kitten, pet")
 
 
 class TestCoverrProvider(unittest.TestCase):

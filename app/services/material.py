@@ -52,6 +52,23 @@ def get_api_key(cfg_key: str):
         return api_keys[_api_key_counter % len(api_keys)]
 
 
+def _pexels_page_title(page_url: str) -> str:
+    """
+    Derive a human-readable title from a Pexels video page url.
+
+    Pexels does not return a title field, but the page url embeds one as a
+    slug, e.g. .../video/a-woman-doing-yoga-855/ -> "a woman doing yoga".
+    """
+    if not page_url:
+        return ""
+    slug = page_url.rstrip("/").rsplit("/", 1)[-1]
+    # Drop the trailing numeric video id from the slug.
+    words = [w for w in slug.split("-") if w]
+    if words and words[-1].isdigit():
+        words = words[:-1]
+    return " ".join(words)
+
+
 def search_videos_pexels(
     search_term: str,
     minimum_duration: int,
@@ -100,6 +117,7 @@ def search_videos_pexels(
                     item.provider = "pexels"
                     item.url = video["link"]
                     item.duration = duration
+                    item.description = _pexels_page_title(v.get("url", ""))
                     video_items.append(item)
                     break
         return video_items
@@ -156,6 +174,7 @@ def search_videos_pixabay(
                     item.provider = "pixabay"
                     item.url = video["url"]
                     item.duration = duration
+                    item.description = str(v.get("tags", "") or "")
                     video_items.append(item)
                     break
         return video_items
@@ -233,6 +252,7 @@ def search_videos_coverr(
             item.provider = "coverr"
             item.url = mp4_download_url
             item.duration = duration
+            item.description = str(v.get("title", "") or "")
             video_items.append(item)
         return video_items
     except Exception as e:
@@ -489,6 +509,12 @@ def download_videos_interactively(
         f"{len(tried_terms)} terms, {usable_duration:.0f}s usable of "
         f"{audio_duration:.0f}s needed"
     )
+    valid_video_items = filter_video_items_by_topic(
+        video_subject=video_subject,
+        video_script=video_script,
+        video_items=valid_video_items,
+        url_terms=url_terms,
+    )
     return _download_video_items(
         task_id=task_id,
         valid_video_items=valid_video_items,
@@ -497,6 +523,71 @@ def download_videos_interactively(
         audio_duration=audio_duration,
         max_clip_duration=max_clip_duration,
     )
+
+
+def filter_video_items_by_topic(
+    video_subject: str,
+    video_script: str,
+    video_items: List[MaterialInfo],
+    url_terms: Dict[str, str],
+) -> List[MaterialInfo]:
+    """
+    Vet searched videos with the LLM before downloading anything.
+
+    Each candidate's provider title/description (plus the search term that
+    surfaced it) is shown to the LLM, which returns the indices of the videos
+    that actually fit the video subject; clearly off-topic footage is dropped.
+    Fails open: when the LLM reply is unusable, or it would drop everything,
+    the original list is returned untouched.
+    """
+    from app.services import llm
+
+    if not video_items:
+        return video_items
+
+    candidates = [
+        {
+            "index": index,
+            "description": (item.description or "").strip(),
+            "search_term": url_terms.get(item.url, ""),
+        }
+        for index, item in enumerate(video_items)
+    ]
+    keep_indices = llm.select_relevant_videos(
+        video_subject=video_subject,
+        video_script=video_script,
+        candidates=candidates,
+    )
+    if keep_indices is None:
+        logger.warning(
+            "llm relevance check unavailable; keeping all searched videos"
+        )
+        return video_items
+
+    kept = [
+        item
+        for index, item in enumerate(video_items)
+        if index in set(keep_indices)
+    ]
+    if not kept:
+        logger.warning(
+            "llm relevance check rejected every video; keeping all searched "
+            "videos instead of producing an empty material pool"
+        )
+        return video_items
+
+    dropped = len(video_items) - len(kept)
+    if dropped:
+        dropped_titles = [
+            item.description or url_terms.get(item.url, "")
+            for index, item in enumerate(video_items)
+            if index not in set(keep_indices)
+        ]
+        logger.info(
+            f"llm relevance check dropped {dropped} off-topic videos: "
+            f"{dropped_titles}"
+        )
+    return kept
 
 
 def _download_video_items(

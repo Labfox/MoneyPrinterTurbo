@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import requests
-from typing import List
+from typing import List, Optional
 
 from loguru import logger
 from openai import AzureOpenAI, OpenAI
@@ -826,6 +826,78 @@ Please note that you must use English for generating video search terms; Chinese
     if not isinstance(terms, list):
         return []
     return [term for term in terms if isinstance(term, str) and term.strip()]
+
+
+def select_relevant_videos(
+    video_subject: str,
+    video_script: str,
+    candidates: List[dict],
+) -> Optional[List[int]]:
+    """
+    Ask the LLM which candidate stock videos are actually on topic, judging by
+    the title/description metadata the provider returned for each one.
+
+    `candidates` entries look like {"index": int, "description": str,
+    "search_term": str}. Returns the list of indices to KEEP, or None when the
+    reply cannot be parsed — callers must treat None as "keep everything" so a
+    flaky LLM can never empty the material pool.
+    """
+    if not candidates:
+        return None
+
+    candidate_lines = "\n".join(
+        f'{entry["index"]}. "{entry.get("description") or entry.get("search_term", "")}" '
+        f'(found via search term: "{entry.get("search_term", "")}")'
+        for entry in candidates
+    )
+    prompt = f"""
+# Role: Stock Video Relevance Checker
+
+## Goals:
+We searched a stock-video provider for footage to illustrate a narrated video. Below is the list of candidate videos with their titles/descriptions. Decide which ones actually fit the video's subject, so off-topic footage is not downloaded.
+
+## Candidate videos:
+{candidate_lines}
+
+## Constrains:
+1. reply with a json-array of the index numbers of the videos to KEEP.
+2. you must only return the json-array of integers. you must not return anything else.
+3. keep a video when its title/description is plausibly related to the video subject; drop it only when it is clearly about something else.
+4. when a title/description is empty or too vague to judge, keep it.
+
+## Output Example:
+[0, 1, 3, 4]
+
+## Context:
+### Video Subject
+{video_subject}
+
+### Video Script
+{video_script}
+""".strip()
+
+    logger.info(f"asking llm to check {len(candidates)} videos for topical relevance")
+    response = ""
+    for i in range(_max_retries):
+        try:
+            response = _generate_response(prompt)
+            if "Error: " in response:
+                logger.error(f"failed to check video relevance: {response}")
+                return None
+            match = re.search(r"\[[^\[\]]*]", response)
+            if not match:
+                raise ValueError(f"no json-array found in response: {response}")
+            indices = json.loads(match.group())
+            if not isinstance(indices, list) or not all(
+                isinstance(idx, int) for idx in indices
+            ):
+                raise ValueError("response is not a list of integers")
+            return indices
+        except Exception as e:
+            logger.warning(f"failed to check video relevance: {str(e)}")
+            if i < _max_retries - 1:
+                logger.warning(f"retrying relevance check... {i + 1}")
+    return None
 
 
 # =============================================================================
