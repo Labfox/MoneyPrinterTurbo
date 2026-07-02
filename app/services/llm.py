@@ -824,7 +824,11 @@ Please note that you must use English for generating video search terms; Chinese
     logger.info(
         f"subject: {video_subject}, match_script_order: {match_script_order}"
     )
+    return _generate_term_list(prompt)
 
+
+def _generate_term_list(prompt: str):
+    """Run a terms prompt with retries and parse the json-array reply."""
     search_terms = []
     response = ""
     for i in range(_max_retries):
@@ -860,6 +864,70 @@ Please note that you must use English for generating video search terms; Chinese
 
     logger.success(f"completed: \n{search_terms}")
     return search_terms
+
+
+def generate_terms_with_feedback(
+    video_subject: str,
+    video_script: str,
+    search_history: List[dict],
+    remaining_seconds: float,
+    amount: int = 5,
+) -> List[str]:
+    """
+    Ask the LLM for replacement stock-video search terms, given how the previous
+    terms actually performed against the provider.
+
+    `search_history` entries look like {"term": str, "videos": int, "seconds": int}
+    — how many usable videos each already-tried term returned and how much
+    footage they contributed. The LLM sees that feedback and proposes new terms,
+    steering away from terms that returned nothing. Returns [] when the reply
+    cannot be parsed, so callers just stop refining.
+    """
+    history_lines = "\n".join(
+        f'- "{entry.get("term", "")}": {entry.get("videos", 0)} videos found '
+        f'({entry.get("seconds", 0)} seconds of footage)'
+        for entry in search_history
+    )
+    prompt = f"""
+# Role: Video Search Terms Refiner
+
+## Goals:
+We are searching a stock-video provider for footage matching a video's narration, but the search terms tried so far did not find enough material. Generate {amount} NEW search terms that are likely to return more stock videos.
+
+## Search results so far:
+{history_lines}
+
+We still need about {int(remaining_seconds)} more seconds of footage.
+
+## Constrains:
+1. the search terms are to be returned as a json-array of strings.
+2. each search term should consist of 1-3 words.
+3. you must only return the json-array of strings. you must not return anything else.
+4. do NOT repeat any search term listed above; propose different wording.
+5. for terms above that found 0 videos, prefer broader or more visual concepts (things a camera can film) that are still related to the video subject.
+6. reply with english search terms only.
+
+## Output Example:
+["search term 1", "search term 2", "search term 3","search term 4","search term 5"]
+
+## Context:
+### Video Subject
+{video_subject}
+
+### Video Script
+{video_script}
+
+Please note that you must use English for generating video search terms; Chinese is not accepted.
+""".strip()
+
+    logger.info(
+        f"asking llm for {amount} refined search terms "
+        f"({int(remaining_seconds)}s of footage still needed)"
+    )
+    terms = _generate_term_list(prompt)
+    if not isinstance(terms, list):
+        return []
+    return [term for term in terms if isinstance(term, str) and term.strip()]
 
 
 # =============================================================================

@@ -324,6 +324,14 @@ def download_videos(
     return video_paths
 
 
+def _get_search_provider(source: str):
+    if source == "pixabay":
+        return search_videos_pixabay
+    if source == "coverr":
+        return search_videos_coverr
+    return search_videos_pexels
+
+
 def download_videos_with_terms(
     task_id: str,
     search_terms: List[str],
@@ -348,11 +356,7 @@ def download_videos_with_terms(
     # can be described later, even after random shuffling.
     url_terms: Dict[str, str] = {}
     found_duration = 0.0
-    search_videos = search_videos_pexels
-    if source == "pixabay":
-        search_videos = search_videos_pixabay
-    elif source == "coverr":
-        search_videos = search_videos_coverr
+    search_videos = _get_search_provider(source)
 
     material_directory = config.app.get("material_directory", "").strip()
     if material_directory == "task":
@@ -395,7 +399,148 @@ def download_videos_with_terms(
     logger.info(
         f"found total videos: {len(valid_video_items)}, required duration: {audio_duration} seconds, found duration: {found_duration} seconds"
     )
+    return _download_video_items(
+        task_id=task_id,
+        valid_video_items=valid_video_items,
+        url_terms=url_terms,
+        video_concat_mode=video_concat_mode,
+        audio_duration=audio_duration,
+        max_clip_duration=max_clip_duration,
+    )
+
+
+def download_videos_interactively(
+    task_id: str,
+    video_subject: str,
+    video_script: str,
+    initial_terms: List[str],
+    source: str = "pexels",
+    video_aspect: VideoAspect = VideoAspect.portrait,
+    video_concat_mode: VideoConcatMode = VideoConcatMode.random,
+    audio_duration: float = 0.0,
+    max_clip_duration: int = 5,
+    max_rounds: int = 3,
+) -> Tuple[List[str], Dict[str, str]]:
+    """
+    LLM-in-the-loop material search.
+
+    Round 1 searches the provider with `initial_terms` (the terms the LLM
+    already generated for this video). If the results don't cover the audio
+    duration, each round's outcome (term -> videos found, seconds of footage)
+    is reported back to the same LLM, which proposes replacement terms; the
+    loop repeats until enough footage is found or `max_rounds` is exhausted.
+    Whatever was found is then downloaded exactly like the non-interactive path.
+    """
+    from app.services import llm
+
+    search_videos = _get_search_provider(source)
+    valid_video_items = []
+    valid_video_urls = []
+    url_terms: Dict[str, str] = {}
+    # Usable seconds: each source clip contributes at most max_clip_duration to
+    # the final timeline, so cap per-item duration when deciding "enough".
+    usable_duration = 0.0
+    search_history: List[dict] = []
+    tried_terms = set()
+    terms = [term for term in initial_terms if term and term.strip()]
+
+    for round_no in range(1, max_rounds + 1):
+        for search_term in terms:
+            term_key = search_term.strip().lower()
+            if not term_key or term_key in tried_terms:
+                continue
+            tried_terms.add(term_key)
+
+            video_items = search_videos(
+                search_term=search_term,
+                minimum_duration=max_clip_duration,
+                video_aspect=video_aspect,
+            )
+            term_videos = 0
+            term_seconds = 0.0
+            for item in video_items:
+                if item.url not in valid_video_urls:
+                    valid_video_items.append(item)
+                    valid_video_urls.append(item.url)
+                    url_terms[item.url] = search_term
+                    term_videos += 1
+                    seconds = min(max_clip_duration, item.duration)
+                    term_seconds += seconds
+                    usable_duration += seconds
+            search_history.append(
+                {
+                    "term": search_term,
+                    "videos": term_videos,
+                    "seconds": int(term_seconds),
+                }
+            )
+            logger.info(
+                f"round {round_no}: found {term_videos} videos for '{search_term}' "
+                f"({term_seconds:.0f}s usable)"
+            )
+
+        if audio_duration <= 0 or usable_duration >= audio_duration:
+            break
+        if round_no == max_rounds:
+            logger.warning(
+                f"interactive search exhausted {max_rounds} rounds with "
+                f"{usable_duration:.0f}s of {audio_duration:.0f}s needed"
+            )
+            break
+
+        remaining = audio_duration - usable_duration
+        logger.info(
+            f"round {round_no}: {usable_duration:.0f}s of {audio_duration:.0f}s "
+            f"covered, asking llm for refined search terms"
+        )
+        new_terms = llm.generate_terms_with_feedback(
+            video_subject=video_subject,
+            video_script=video_script,
+            search_history=list(search_history),
+            remaining_seconds=remaining,
+        )
+        terms = [
+            term
+            for term in new_terms
+            if term.strip().lower() not in tried_terms
+        ]
+        if not terms:
+            logger.warning(
+                "llm returned no new search terms; stopping interactive search"
+            )
+            break
+
+    logger.info(
+        f"interactive search finished: {len(valid_video_items)} videos across "
+        f"{len(tried_terms)} terms, {usable_duration:.0f}s usable of "
+        f"{audio_duration:.0f}s needed"
+    )
+    return _download_video_items(
+        task_id=task_id,
+        valid_video_items=valid_video_items,
+        url_terms=url_terms,
+        video_concat_mode=video_concat_mode,
+        audio_duration=audio_duration,
+        max_clip_duration=max_clip_duration,
+    )
+
+
+def _download_video_items(
+    task_id: str,
+    valid_video_items: List[MaterialInfo],
+    url_terms: Dict[str, str],
+    video_concat_mode: VideoConcatMode,
+    audio_duration: float,
+    max_clip_duration: int,
+) -> Tuple[List[str], Dict[str, str]]:
+    """Download searched items until the audio duration is covered."""
     video_paths = []
+
+    material_directory = config.app.get("material_directory", "").strip()
+    if material_directory == "task":
+        material_directory = utils.task_dir(task_id)
+    elif material_directory and not os.path.isdir(material_directory):
+        material_directory = ""
 
     concat_mode_value = getattr(video_concat_mode, "value", video_concat_mode)
     if concat_mode_value == VideoConcatMode.random.value:
