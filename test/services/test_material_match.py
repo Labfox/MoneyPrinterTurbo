@@ -240,6 +240,107 @@ class TestBuildSemanticPlacements(unittest.TestCase):
             # window length is capped at max_clip_duration
             self.assertLessEqual(p.duration, 3.0 + 1e-6)
 
+    def test_clip_goes_to_the_window_it_matches_best(self):
+        # Both windows prefer clip A, but the second window matches it far more
+        # strongly. A must go to the second window; the first takes its own
+        # runner-up (B) instead of stealing A just by coming earlier.
+        srt = (
+            "1\n00:00:00,000 --> 00:00:03,000\ntopic\n\n"
+            "2\n00:00:03,000 --> 00:00:06,000\ntopic\n"
+        )
+        path = _write_srt(srt)
+        try:
+            descriptions = {"/v/a.mp4": "A", "/v/b.mp4": "B"}
+            durations = {"/v/a.mp4": 30.0, "/v/b.mp4": 30.0}
+            model = _FixedSimModel(
+                window_vecs=[[0.90, 0.80], [0.95, 0.30]],
+                clip_vecs=[[1.0, 0.0], [0.0, 1.0]],
+                clip_texts=["A", "B"],
+            )
+            with patch.object(material_match, "is_available", return_value=True), patch.object(
+                material_match, "_load_model", return_value=model
+            ):
+                placements = material_match.build_semantic_placements(
+                    path,
+                    audio_duration=6.0,
+                    clip_descriptions=descriptions,
+                    clip_durations=durations,
+                    max_clip_duration=3,
+                    rng=random.Random(0),
+                )
+            self.assertEqual(
+                [p.source_path for p in placements], ["/v/b.mp4", "/v/a.mp4"]
+            )
+        finally:
+            os.remove(path)
+
+    def test_each_clip_used_at_most_once(self):
+        # Every window prefers clip A; without-replacement selection must still
+        # spread across the pool instead of looping the same source.
+        srt = "".join(
+            f"{i + 1}\n00:00:0{i * 3},000 --> 00:00:0{i * 3 + 3},000\ntopic\n\n"
+            for i in range(3)
+        )
+        path = _write_srt(srt)
+        try:
+            descriptions = {"/v/a.mp4": "A", "/v/b.mp4": "B", "/v/c.mp4": "C"}
+            durations = {p: 30.0 for p in descriptions}
+            model = _FixedSimModel(
+                window_vecs=[[0.9, 0.5, 0.1]] * 3,
+                clip_vecs=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                clip_texts=["A", "B", "C"],
+            )
+            with patch.object(material_match, "is_available", return_value=True), patch.object(
+                material_match, "_load_model", return_value=model
+            ):
+                placements = material_match.build_semantic_placements(
+                    path,
+                    audio_duration=9.0,
+                    clip_descriptions=descriptions,
+                    clip_durations=durations,
+                    max_clip_duration=3,
+                    rng=random.Random(0),
+                )
+            sources = [p.source_path for p in placements]
+            self.assertEqual(len(sources), len(set(sources)))
+            self.assertEqual(sources[0], "/v/a.mp4")
+        finally:
+            os.remove(path)
+
+    def test_reuse_only_after_pool_exhausted(self):
+        # More windows than clips: reuse is unavoidable, but only after every
+        # clip has been shown once, and never twice in a row.
+        srt = "".join(
+            f"{i + 1}\n00:00:0{i},000 --> 00:00:0{i + 1},000\ntopic\n\n"
+            for i in range(5)
+        )
+        path = _write_srt(srt)
+        try:
+            descriptions = {"/v/a.mp4": "A", "/v/b.mp4": "B"}
+            durations = {p: 30.0 for p in descriptions}
+            model = _FixedSimModel(
+                window_vecs=[[0.9, 0.5]] * 5,
+                clip_vecs=[[1.0, 0.0], [0.0, 1.0]],
+                clip_texts=["A", "B"],
+            )
+            with patch.object(material_match, "is_available", return_value=True), patch.object(
+                material_match, "_load_model", return_value=model
+            ):
+                placements = material_match.build_semantic_placements(
+                    path,
+                    audio_duration=5.0,
+                    clip_descriptions=descriptions,
+                    clip_durations=durations,
+                    max_clip_duration=1,
+                    rng=random.Random(0),
+                )
+            sources = [p.source_path for p in placements]
+            self.assertEqual(set(sources[:2]), {"/v/a.mp4", "/v/b.mp4"})
+            for prev, cur in zip(sources, sources[1:]):
+                self.assertNotEqual(prev, cur)
+        finally:
+            os.remove(path)
+
     def test_avoids_immediate_repeat_when_runner_up_is_close(self):
         # Two identical windows that both prefer clip A, with B only 0.03 behind.
         srt = (
