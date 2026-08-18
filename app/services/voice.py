@@ -8,12 +8,14 @@ import os
 import queue
 import re
 import subprocess
+import tempfile
 import threading
 import time
 import unicodedata
 from datetime import datetime
 from typing import Union
-from xml.sax.saxutils import unescape
+from urllib.parse import urlparse
+from xml.sax.saxutils import escape, unescape
 
 import edge_tts
 import requests
@@ -29,6 +31,15 @@ from app.utils import utils
 _DEFAULT_EDGE_TTS_TIMEOUT_SECONDS = 30.0
 _MIMO_DEFAULT_BASE_URL = "https://api.xiaomimimo.com/v1"
 _MIMO_DEFAULT_TTS_MODEL = "mimo-v2.5-tts"
+MINIMAX_TTS_GLOBAL_URL = "https://api.minimax.io/v1/t2a_v2"
+MINIMAX_TTS_CN_URL = "https://api.minimaxi.com/v1/t2a_v2"
+MINIMAX_TTS_DEFAULT_MODEL = "speech-2.8-hd"
+MINIMAX_TTS_DEFAULT_VOICE = "English_expressive_narrator"
+MINIMAX_TTS_MODELS = (
+    "speech-2.8-hd", "speech-2.8-turbo", "speech-2.6-hd", "speech-2.6-turbo",
+    "speech-02-hd", "speech-02-turbo", "speech-01-hd", "speech-01-turbo",
+)
+_MINIMAX_TTS_MAX_AUDIO_HEX_CHARS = 100 * 1024 * 1024
 NO_VOICE_NAME = "no-voice"
 # `none` 是 PR #981 里曾使用过的无配音标识。这里短期兼容这个值，避免
 # 已经手动调用过该分支的 API 用户升级后立即失效；WebUI 和新代码统一使用
@@ -137,6 +148,16 @@ def get_mimo_voices() -> list[str]:
     ]
 
     return [f"mimo:{voice}-{gender}" for voice, gender in voices_with_gender]
+
+
+def get_minimax_voices(voice_id: str | None = None) -> list[str]:
+    """返回当前配置的 MiniMax 音色，供统一的 TTS 调度格式使用。"""
+    voice_id = str(
+        voice_id
+        or config.minimax_tts.get("voice_id", MINIMAX_TTS_DEFAULT_VOICE)
+        or MINIMAX_TTS_DEFAULT_VOICE
+    ).strip()
+    return [f"minimax:{voice_id}"]
 
 
 def get_elevenlabs_voices(api_key: str) -> list[str]:
@@ -248,8 +269,24 @@ def is_mimo_voice(voice_name: str):
     return voice_name.startswith("mimo:")
 
 
+def is_minimax_voice(voice_name: str | None) -> bool:
+    return (voice_name or "").startswith("minimax:")
+
+
 def is_elevenlabs_voice(voice_name: str) -> bool:
     return (voice_name or "").startswith("elevenlabs:")
+
+
+def get_elevenlabs_api_key() -> str:
+    """
+    读取 ElevenLabs TTS 使用的 API Key。
+
+    配置文件优先，环境变量仅作为未配置时的后备来源。WebUI 和配乐功能已经
+    支持 ``ELEVENLABS_API_KEY``，TTS 必须使用相同规则，否则仅通过容器环境
+    变量部署时，音色列表可正常加载，真正合成语音却会误报未配置 Key。
+    """
+    configured_key = str(config.elevenlabs.get("api_key", "") or "").strip()
+    return configured_key or os.getenv("ELEVENLABS_API_KEY", "").strip()
 
 
 def is_chatterbox_voice(voice_name: str) -> bool:
@@ -374,7 +411,12 @@ def tts(
         )
 
     if is_azure_v2_voice(voice_name):
-        return azure_tts_v2(text, voice_name, voice_file)
+        return azure_tts_v2(
+            text,
+            voice_name,
+            voice_file,
+            voice_rate=voice_rate,
+        )
     elif is_siliconflow_voice(voice_name):
         # 从voice_name中提取模型和声音
         # 格式: siliconflow:model:voice-Gender
@@ -416,6 +458,12 @@ def tts(
         else:
             logger.error(f"Invalid mimo voice name format: {voice_name}")
             return None
+    elif is_minimax_voice(voice_name):
+        voice_id = voice_name.split(":", 1)[1].strip()
+        if voice_id:
+            return minimax_tts(text, voice_id, voice_rate, voice_file, voice_volume)
+        logger.error(f"Invalid MiniMax voice name format: {voice_name}")
+        return None
     elif is_elevenlabs_voice(voice_name):
         # 格式: elevenlabs:{voice_id}:{name}
         parts = voice_name.split(":")
@@ -914,12 +962,43 @@ def siliconflow_tts(
     return None
 
 
-def azure_tts_v2(text: str, voice_name: str, voice_file: str) -> Union[SubMaker, None]:
+def _build_azure_v2_ssml(text: str, voice_name: str, voice_rate: float) -> str:
+    """构造 Azure Speech V2 使用的 SSML，并安全规范化语速参数。"""
+    try:
+        normalized_rate = float(voice_rate)
+    except (TypeError, ValueError):
+        normalized_rate = 1.0
+    normalized_rate = max(0.25, min(4.0, normalized_rate))
+
+    voice_locale_parts = voice_name.split("-", 2)
+    voice_locale = (
+        "-".join(voice_locale_parts[:2])
+        if len(voice_locale_parts) >= 2
+        else "en-US"
+    )
+    escaped_text = escape(text)
+    escaped_voice_name = escape(voice_name, {'"': "&quot;"})
+    return (
+        '<speak version="1.0" xmlns="http://www.w3.org/2001/10/synthesis" '
+        f'xml:lang="{voice_locale}">'
+        f'<voice name="{escaped_voice_name}">'
+        f'<prosody rate="{normalized_rate:g}">{escaped_text}</prosody>'
+        "</voice></speak>"
+    )
+
+
+def azure_tts_v2(
+    text: str,
+    voice_name: str,
+    voice_file: str,
+    voice_rate: float = 1.0,
+) -> Union[SubMaker, None]:
     voice_name = is_azure_v2_voice(voice_name)
     if not voice_name:
         logger.error(f"invalid voice name: {voice_name}")
         raise ValueError(f"invalid voice name: {voice_name}")
     text = text.strip()
+    ssml = _build_azure_v2_ssml(text, voice_name, voice_rate)
 
     def _format_duration_to_offset(duration) -> int:
         if isinstance(duration, str):
@@ -939,7 +1018,9 @@ def azure_tts_v2(text: str, voice_name: str, voice_file: str) -> Union[SubMaker,
 
     for i in range(3):
         try:
-            logger.info(f"start, voice name: {voice_name}, try: {i + 1}")
+            logger.info(
+                f"start, voice name: {voice_name}, rate: {voice_rate}, try: {i + 1}"
+            )
 
             import azure.cognitiveservices.speech as speechsdk
 
@@ -990,7 +1071,9 @@ def azure_tts_v2(text: str, voice_name: str, voice_file: str) -> Union[SubMaker,
                 speech_synthesizer_word_boundary_cb
             )
 
-            result = speech_synthesizer.speak_text_async(text).get()
+            # speak_text_async() 不支持语速参数。使用 SSML prosody 后，试听和
+            # 正式生成都会按 WebUI/API 传入的 voice_rate 调整语速。
+            result = speech_synthesizer.speak_ssml_async(ssml).get()
             if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
                 logger.success(f"azure v2 speech synthesis succeeded: {voice_file}")
                 return sub_maker
@@ -1032,39 +1115,38 @@ def gemini_tts(
     import base64
     import io
     from pydub import AudioSegment
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types
     _configure_pydub_ffmpeg(AudioSegment)
     
     try:
-        # 配置Gemini API
         api_key = config.app.get("gemini_api_key", "")
         if not api_key:
             logger.error("Gemini API key is not set")
             return None
-            
-        genai.configure(api_key=api_key)
-        
+
         logger.info(f"start, voice name: {voice_name}, try: 1")
-        
-        # 使用Gemini TTS API
-        model = genai.GenerativeModel("gemini-2.5-flash-preview-tts")
-        
-        generation_config = {
-            "response_modalities": ["AUDIO"],
-            "speech_config": {
-                "voice_config": {
-                    "prebuilt_voice_config": {
-                        "voice_name": voice_name
-                    }
-                }
-            }
-        }
-        
-        response = model.generate_content(
-            contents=text,
-            generation_config=generation_config
+
+        generation_config = types.GenerateContentConfig(
+            response_modalities=["AUDIO"],
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name=voice_name
+                    )
+                )
+            ),
         )
-        
+
+        # google-genai 使用统一 Client 调用文本和 TTS 模型。上下文管理器确保
+        # 请求结束后释放 HTTP 连接，同时保留原有 PCM 转码和字幕时间轴逻辑。
+        with genai.Client(api_key=api_key) as client:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash-preview-tts",
+                contents=text,
+                config=generation_config,
+            )
+
         # 检查响应
         if not response.candidates or not response.candidates[0].content:
             logger.error("No audio content received from Gemini TTS")
@@ -1105,8 +1187,15 @@ def gemini_tts(
             logger.error(f"Failed to load PCM audio: {e}")
             return None
         
-        # 导出为MP3格式
-        audio_segment.export(voice_file, format="mp3")
+        # API、CLI 或测试可以直接把尚不存在的嵌套目录作为输出位置。这里在
+        # 真正写文件前统一创建父目录，避免一次成功的 Gemini 请求最后因为
+        # 本地路径不存在而丢失结果，也让该 provider 与其他 TTS 实现行为一致。
+        ensure_file_path_exists(voice_file)
+
+        # pydub 会返回打开的输出文件对象。批量生成时若不主动关闭，文件描述符
+        # 会持续累积，并在 Windows 上增加后续覆盖或删除音频文件失败的概率。
+        exported_audio = audio_segment.export(voice_file, format="mp3")
+        exported_audio.close()
         
         logger.info(f"completed, output file: {voice_file}")
         
@@ -1229,6 +1318,237 @@ def mimo_tts(
     return None
 
 
+def _resolve_minimax_tts_url(configured_url: str) -> str:
+    configured_url = (configured_url or "").strip().rstrip("/")
+    if not configured_url:
+        return MINIMAX_TTS_GLOBAL_URL
+    if configured_url in {MINIMAX_TTS_GLOBAL_URL, MINIMAX_TTS_CN_URL}:
+        return configured_url
+    if configured_url.endswith("/v1"):
+        return f"{configured_url}/t2a_v2"
+    return configured_url
+
+
+def get_minimax_tts_api_key() -> str:
+    """返回 MiniMax TTS 的有效密钥，专用配置优先于 LLM 共享配置。"""
+    return str(
+        config.minimax_tts.get("api_key", "")
+        or config.app.get("minimax_api_key", "")
+        or os.getenv("MINIMAX_API_KEY", "")
+        or ""
+    ).strip()
+
+
+def _infer_minimax_tts_url(base_url: str) -> str:
+    """根据 MiniMax LLM 地址推断同区域的 TTS 地址，无法识别时返回空值。"""
+    normalized_url = str(base_url or "").strip()
+    if not normalized_url:
+        return ""
+
+    parse_target = normalized_url if "://" in normalized_url else f"//{normalized_url}"
+    host = (urlparse(parse_target).hostname or "").lower()
+    if host == "minimaxi.com" or host.endswith(".minimaxi.com"):
+        return MINIMAX_TTS_CN_URL
+    if host == "minimax.io" or host.endswith(".minimax.io"):
+        return MINIMAX_TTS_GLOBAL_URL
+    return ""
+
+
+def get_minimax_tts_endpoint() -> str:
+    """
+    返回与当前有效密钥匹配的 MiniMax TTS 地址。
+
+    独立配置 TTS Key 时尊重用户选择的 TTS 地址；复用 MiniMax LLM Key 时，
+    优先跟随 LLM Base URL 的区域，避免中国站 Key 被发送到国际站而返回 401。
+    """
+    dedicated_key = str(config.minimax_tts.get("api_key", "") or "").strip()
+    if not dedicated_key:
+        inferred_url = _infer_minimax_tts_url(config.app.get("minimax_base_url", ""))
+        if inferred_url:
+            return inferred_url
+    return _resolve_minimax_tts_url(config.minimax_tts.get("base_url", ""))
+
+
+def get_minimax_voice_catalog(
+    api_key: str = "",
+    endpoint: str = "",
+    voice_type: str = "all",
+) -> list[dict[str, str]]:
+    """
+    查询当前 MiniMax 账号可用的系统、克隆和生成音色。
+
+    返回值统一为 voice_id、voice_name、voice_type 三个字段，调用方无需了解
+    MiniMax 按音色来源拆分数组的响应结构。查询失败时抛出异常，让 WebUI、
+    API 或 CLI 可以按各自交互方式展示明确错误，而不是静默返回空列表。
+    """
+    if voice_type not in {"system", "voice_cloning", "voice_generation", "all"}:
+        raise ValueError(f"Unsupported MiniMax voice type: {voice_type}")
+
+    effective_api_key = str(api_key or get_minimax_tts_api_key()).strip()
+    if not effective_api_key:
+        raise ValueError("MiniMax TTS API key is not set")
+
+    tts_endpoint = (
+        _resolve_minimax_tts_url(endpoint)
+        if endpoint
+        else get_minimax_tts_endpoint()
+    )
+    voice_endpoint = (
+        f"{tts_endpoint[:-len('/t2a_v2')]}/get_voice"
+        if tts_endpoint.endswith("/t2a_v2")
+        else f"{tts_endpoint.rstrip('/')}/get_voice"
+    )
+    response = requests.post(
+        voice_endpoint,
+        json={"voice_type": voice_type},
+        headers={
+            "Authorization": f"Bearer {effective_api_key}",
+            "Content-Type": "application/json",
+        },
+        timeout=30,
+    )
+    if response.status_code != 200:
+        raise RuntimeError(
+            f"MiniMax get_voice failed with status {response.status_code}: "
+            f"{response.text[:200]}"
+        )
+
+    try:
+        body = response.json()
+    except ValueError as exc:
+        raise RuntimeError("MiniMax get_voice returned invalid JSON") from exc
+
+    base_resp = body.get("base_resp") or {}
+    if base_resp.get("status_code") not in {0, "0"}:
+        status_message = str(base_resp.get("status_msg") or "unknown error")
+        raise RuntimeError(f"MiniMax get_voice failed: {status_message}")
+
+    catalog = []
+    seen_voice_ids = set()
+    response_groups = (
+        ("system", "system_voice"),
+        ("voice_cloning", "voice_cloning"),
+        ("voice_generation", "voice_generation"),
+    )
+    for normalized_type, response_key in response_groups:
+        for item in body.get(response_key) or []:
+            voice_id = str(item.get("voice_id") or "").strip()
+            if not voice_id or voice_id in seen_voice_ids:
+                continue
+            seen_voice_ids.add(voice_id)
+            catalog.append(
+                {
+                    "voice_id": voice_id,
+                    "voice_name": str(item.get("voice_name") or voice_id).strip(),
+                    "voice_type": normalized_type,
+                }
+            )
+
+    logger.info(f"loaded MiniMax voices: count={len(catalog)}, type={voice_type}")
+    return catalog
+
+
+def _write_validated_minimax_audio(audio_bytes: bytes, voice_file: str) -> float:
+    """
+    将 MiniMax 音频原子写入目标路径，并返回时长。
+
+    远端返回成功状态不代表音频一定完整。先在同目录临时文件中验证，再使用
+    os.replace 原子替换，可以避免解码失败或 MoviePy 无法读取时留下半成品。
+    """
+    ensure_file_path_exists(voice_file)
+    output_dir = os.path.dirname(os.path.abspath(voice_file))
+    output_suffix = os.path.splitext(voice_file)[1] or ".mp3"
+    temp_fd, temp_path = tempfile.mkstemp(
+        prefix=".minimax-tts-", suffix=output_suffix, dir=output_dir
+    )
+    os.close(temp_fd)
+
+    try:
+        with open(temp_path, "wb") as output:
+            output.write(audio_bytes)
+
+        audio_clip = AudioFileClip(temp_path)
+        try:
+            audio_duration = float(audio_clip.duration)
+        finally:
+            audio_clip.close()
+
+        if not math.isfinite(audio_duration) or audio_duration <= 0:
+            raise ValueError("MiniMax TTS returned audio with an invalid duration")
+
+        os.replace(temp_path, voice_file)
+        return audio_duration
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def minimax_tts(text: str, voice_id: str, voice_rate: float, voice_file: str, voice_volume: float = 1.0) -> Union[SubMaker, None]:
+    """Generate speech with the synchronous MiniMax T2A HTTP API."""
+    text, voice_id = (text or "").strip(), (voice_id or "").strip()
+    if not text or not voice_id:
+        logger.error("MiniMax TTS requires text and a voice ID")
+        return None
+    settings = config.minimax_tts
+    api_key = get_minimax_tts_api_key()
+    if not api_key:
+        logger.error("MiniMax TTS API key is not set")
+        return None
+    url = get_minimax_tts_endpoint()
+    model = str(settings.get("model_id", MINIMAX_TTS_DEFAULT_MODEL) or MINIMAX_TTS_DEFAULT_MODEL).strip()
+    if model not in MINIMAX_TTS_MODELS:
+        logger.error(f"Unsupported MiniMax TTS model: {model}")
+        return None
+    try:
+        speed = max(0.5, min(2.0, float(voice_rate or 1.0)))
+        volume = max(0.0, min(10.0, float(voice_volume or 1.0)))
+        pitch = max(-12, min(12, int(settings.get("pitch", 0) or 0)))
+        sample_rate = int(settings.get("sample_rate", 32000) or 32000)
+        bitrate = int(settings.get("bitrate", 128000) or 128000)
+        channel = int(settings.get("channel", 1) or 1)
+    except (TypeError, ValueError) as exc:
+        logger.error(f"Invalid MiniMax TTS audio setting: {str(exc)}")
+        return None
+    audio_format = str(settings.get("audio_format", "mp3") or "mp3").strip()
+    if audio_format not in {"mp3", "wav", "flac", "pcm"}:
+        logger.error(f"Unsupported MiniMax TTS audio format: {audio_format}")
+        return None
+    payload = {
+        "model": model, "text": text, "stream": False, "language_boost": "auto", "output_format": "hex",
+        "voice_setting": {"voice_id": voice_id, "speed": speed, "vol": volume, "pitch": pitch},
+        "audio_setting": {"sample_rate": sample_rate, "bitrate": bitrate, "format": audio_format, "channel": channel},
+    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    for attempt in range(3):
+        try:
+            logger.info(f"start MiniMax TTS, model: {model}, voice: {voice_id}, try: {attempt + 1}")
+            response = requests.post(url, json=payload, headers=headers, timeout=120)
+            if response.status_code != 200:
+                logger.error(f"MiniMax TTS failed with status {response.status_code}: {response.text[:200]}")
+                continue
+            body = response.json()
+            data = body.get("data") or {}
+            base_resp = body.get("base_resp") or {}
+            if base_resp.get("status_code") != 0 or data.get("status") != 2:
+                logger.error(f"MiniMax TTS returned an unsuccessful response: status_code={base_resp.get('status_code')}, audio_status={data.get('status')}")
+                continue
+            audio_hex = data.get("audio")
+            if not isinstance(audio_hex, str) or not audio_hex:
+                logger.error("MiniMax TTS returned empty audio data")
+                continue
+            if len(audio_hex) > _MINIMAX_TTS_MAX_AUDIO_HEX_CHARS:
+                logger.error("MiniMax TTS returned audio data exceeding the supported size")
+                continue
+            audio_duration = _write_validated_minimax_audio(bytes.fromhex(audio_hex), voice_file)
+            logger.success(f"MiniMax TTS succeeded: {voice_file}")
+            return populate_legacy_submaker_with_full_text(
+                ensure_legacy_submaker_fields(SubMaker()), text, audio_duration
+            )
+        except (OSError, ValueError, requests.RequestException) as exc:
+            logger.error(f"MiniMax TTS failed: {str(exc)}")
+    return None
+
+
 def elevenlabs_tts(
     text: str,
     voice_id: str,
@@ -1242,7 +1562,7 @@ def elevenlabs_tts(
         logger.error("ElevenLabs TTS text is empty")
         return None
 
-    api_key = config.elevenlabs.get("api_key", "")
+    api_key = get_elevenlabs_api_key()
     if not api_key:
         logger.error("ElevenLabs API key is not set")
         return None
@@ -1670,32 +1990,32 @@ def _get_audio_duration_from_submaker(sub_maker: SubMaker):
         return 0.0
     return legacy_offsets[-1][1] / 10000000
 
-def _get_audio_duration_from_mp3(mp3_file: str) -> float:
+def _get_audio_duration_from_file(audio_file: str) -> float:
     """
-    获取MP3音频时长
+    获取音频文件时长（支持 mp3/m4a/wav/aac 等 ffmpeg 可解码的格式）
     """
-    if not os.path.exists(mp3_file):
-        logger.error(f"MP3 file does not exist: {mp3_file}")
+    if not os.path.exists(audio_file):
+        logger.error(f"audio file does not exist: {audio_file}")
         return 0.0
 
     try:
-        # Use moviepy to get the duration of the MP3 file
-        with AudioFileClip(mp3_file) as audio:
+        # Use moviepy (ffmpeg) to read the duration of any supported audio format
+        with AudioFileClip(audio_file) as audio:
             return audio.duration  # Duration in seconds
     except Exception as e:
-        logger.error(f"Failed to get audio duration from MP3: {str(e)}")
+        logger.error(f"Failed to get audio duration from file: {str(e)}")
         return 0.0
 
 def get_audio_duration(target: Union[str, SubMaker]) -> float:
     """
     获取音频时长
     如果是SubMaker对象，则从SubMaker中获取时长
-    如果是MP3文件，则从MP3文件中获取时长
+    如果是音频文件路径，则从音频文件中获取时长（支持 mp3/m4a/wav 等格式）
     """
     if isinstance(target, SubMaker):
         return _get_audio_duration_from_submaker(target)
-    elif isinstance(target, str) and target.endswith(".mp3"):
-        return _get_audio_duration_from_mp3(target)
+    elif isinstance(target, str):
+        return _get_audio_duration_from_file(target)
     else:
         logger.error(f"Invalid target type: {type(target)}")
         return 0.0
